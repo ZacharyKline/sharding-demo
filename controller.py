@@ -3,6 +3,7 @@ import os
 from shutil import copyfile
 from typing import List, Dict
 
+
 filename = "chapter2.txt"
 
 
@@ -21,6 +22,7 @@ class ShardHandler(object):
     def __init__(self):
         self.mapping = self.load_map()
         self.last_char_position = 0
+        self.replication_level = 0
 
     mapfile = "mapping.json"
 
@@ -108,7 +110,8 @@ class ShardHandler(object):
         """Split the data into as many pieces as needed."""
         splicenum, rem = divmod(len(data), count)
 
-        result = [data[splicenum * z:splicenum * (z + 1)] for z in range(count)]
+        result = [data[splicenum * z:splicenum *
+                       (z + 1)] for z in range(count)]
         # take care of any odd characters
         if rem > 0:
             result[-1] += data[-rem:]
@@ -146,53 +149,118 @@ class ShardHandler(object):
         """Loads the data from all shards, removes the extra 'database' file,
         and writes the new number of shards to disk.
         """
-        pass
+        self.mapping = self.load_map()
+        data = self.load_data_from_shards()
+        keys = [int(z) for z in self.get_shard_ids()]
+        keys.sort()
+        # why 2? Because we have to compensate for zero indexing
+        new_shard_num = max(keys)
+
+        spliced_data = self._generate_sharded_data(new_shard_num, data)
+        self.mapping = {}
+        os.remove('data/' + str(max(keys)) + '.txt')
+
+        for num, d in enumerate(spliced_data):
+            self._write_shard(num, d)
+
+        self.write_map()
+
+        self.sync_replication()
 
     def add_replication(self) -> None:
         """Add a level of replication so that each shard has a backup. Label
         them with the following format:
-
         1.txt (shard 1, primary)
         1-1.txt (shard 1, replication 1)
         1-2.txt (shard 1, replication 2)
         2.txt (shard 2, primary)
         2-1.txt (shard 2, replication 1)
         ...etc.
-
         By default, there is no replication -- add_replication should be able
         to detect how many levels there are and appropriately add the next
         level.
         """
-        pass
+        self.replication_level += 1
+        fold = './data'
+        files = os.listdir(fold)
+        prime_shards = sorted(
+            [filename for filename in files if '-' not in filename])
+
+        for i, file in enumerate(prime_shards):
+            source = f'./data/{file}'
+            destination = f'./data/{i}-{self.replication_level}.txt'
+            copyfile(source, destination)
+        keys = self.get_shard_ids()
+        for i, key in enumerate(keys):
+            self.mapping[f'{i}-{self.replication_level}'] = self.mapping[key]
+
+        self.write_map()
+        print(self.replication_level)
 
     def remove_replication(self) -> None:
         """Remove the highest replication level.
-
         If there are only primary files left, remove_replication should raise
         an exception stating that there is nothing left to remove.
-
         For example:
-
         1.txt (shard 1, primary)
         1-1.txt (shard 1, replication 1)
         1-2.txt (shard 1, replication 2)
         2.txt (shard 2, primary)
         etc...
-
         to:
-
         1.txt (shard 1, primary)
         1-1.txt (shard 1, replication 1)
         2.txt (shard 2, primary)
         etc...
         """
-        pass
+        if self.replication_level == 0:
+            raise Exception('No replication levels to be removed')
+        fold = './data'
+        files = os.listdir(fold)
+        prime_shards = sorted(
+            [filename for filename in files if '-' not in filename])
+
+        for i, file in enumerate(prime_shards):
+            # source = f'./data/{file}'
+            dups = f'./data/{i}-{self.replication_level}.txt'
+            os.remove(dups)
+        keys = self.get_shard_ids()
+        for i, key in enumerate(keys):
+            last_key = f'{i}-{self.replication_level}'
+            self.mapping.pop(last_key)
+
+        self.write_map()
+        self.replication_level -= 1
+        print(self.replication_level)
 
     def sync_replication(self) -> None:
         """Verify that all replications are equal to their primaries and that
         any missing primaries are appropriately recreated from their
         replications."""
-        pass
+        shards = self.get_shard_ids()
+        reps = self.get_replication_ids()
+        # want to make sure all primaries are there
+        for item in shards:
+            for otheritem in reps:
+                if not os.path.exists(os.path.join(f'./data/{item}.txt')) and os.path.exists(os.path.join(f'./data/{otheritem}.txt')):
+                    return print('You broke it!')
+        for item in shards:
+            if not os.path.exists(os.path.join(f'./data/{item}.txt')):
+                for otheritem in reps:
+                    if otheritem.startswith(item):
+                        if os.path.exists(f'./data/{otheritem}.txt'):
+                            copyfile(f'./data/{otheritem}.txt',
+                                     f'./data/{item}.txt')
+
+        # if not, restore primaires from replications
+        for item in reps:
+            if not os.path.exists(os.path.join(f'./data/{item}.txt')):
+                for otheritem in shards:
+                    if otheritem.startswith(item[:item.index('-')]):
+                        if os.path.exists(f'./data/{otheritem}.txt'):
+                            copyfile(f'./data/{otheritem}.txt',
+                                     f'./data/{item}.txt')
+                            # if both missing we explode
 
     def get_shard_data(self, shardnum=None) -> [str, Dict]:
         """Return information about a shard from the mapfile."""
@@ -214,6 +282,7 @@ s.build_shards(5, load_data_from_file())
 
 print(s.mapping.keys())
 
-s.add_shard()
+# s.add_shard()
+# s.remove_shard()
 
 print(s.mapping.keys())
